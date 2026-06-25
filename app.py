@@ -1,107 +1,176 @@
+import io
 import pandas as pd
+import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-from thefuzz import fuzz
+from thefuzz import process, fuzz
 
-# 1. BACA KEDUA FILE EXCEL
-file1_path = "file_pertama.xlsx"
-file2_path = "file_kedua.xlsx"
-output_path = "hasil_analisis_gaji.xlsx"
+st.set_page_config(
+    page_title="Rekening Fuzzy Merger",
+    page_icon="💳",
+    layout="wide",
+)
 
-df1 = pd.read_excel(file1_path)  # Kolom: Nama Karyawan, No. Rekening, Gaji
-df2 = pd.read_excel(
-    file2_path
-)  # Kolom: Nama Karyawan, No. Rekening, Potongan Angsuran
+st.title("💳 No. Rekening Fuzzy Merger & Validator")
+st.write(
+    "Unggah beberapa file Excel. Aplikasi akan melakukan **Fuzzy Matching pada No. Rekening** yang typo/salah ketik "
+    "agar otomatis diarahkan ke **No. Rekening Valid** dari file acuan pertama dengan validasi kesesuaian nama."
+)
 
-# Pastikan tipe data No. Rekening berupa string dan bersih dari spasi
-df1["No. Rekening"] = df1["No. Rekening"].astype(str).str.strip()
-df2["No. Rekening"] = df2["No. Rekening"].astype(str).str.strip()
+uploaded_files = st.file_uploader(
+    "Upload Semua File Excel Anda (Minimal 2 file)",
+    type=["xlsx"],
+    accept_multiple_files=True,
+)
 
-# Buat dictionary dari file kedua untuk mempercepat pencarian berdasarkan No. Rekening
-# Struktur: { 'no_rekening': ('nama_di_file2', potongan_angsuran) }
-dict_file2 = {}
-for _, row in df2.iterrows():
-    dict_file2[str(row["No. Rekening"])] = (
-        str(row["Nama Karyawan"]),
-        row["Potongan Angsuran"],
-    )
-
-# 2. PROSES PENCOCOKAN & HITUNG SIMILARITY
-nama_baru_list = []
-potongan_list = []
-similarity_list = []
-
-for _, row in df1.iterrows():
-    nama1 = str(row["Nama Karyawan"]).strip()
-    norek = str(row["No. Rekening"]).strip()
-
-    # Cek apakah No. Rekening ada di file kedua
-    if norek in dict_file2:
-        nama2, potongan = dict_file2[norek]
-        nama2 = nama2.strip()
-
-        # Hitung skor kemiripan antara nama di file 1 dan file 2 (skala 0 - 100)
-        skor = fuzz.ratio(nama1.lower(), nama2.lower())
-
-        potongan_list.append(potongan)
-        similarity_list.append(skor)
+if uploaded_files:
+    if len(uploaded_files) < 2:
+        st.warning("⚠️ Silahkan unggah minimal 2 file Excel untuk digabungkan.")
     else:
-        # Jika No. Rekening tidak ditemukan di file kedua
-        potongan_list.append(0)
-        similarity_list.append(
-            0
-        )  # Dianggap 0% karena data orangnya tidak ada di file 2
+        st.info(
+            f"💡 File acuan utama: **{uploaded_files.name}**. Nomor rekening di file ini dianggap sebagai **Rekening Valid** yang sah."
+        )
 
-# Tambahkan kolom baru ke DataFrame pertama (tetap menggunakan Nama Karyawan asli)
-df1["Potongan Angsuran"] = potongan_list
-df1["Potongan Angsuran"] = df1["Potongan Angsuran"].fillna(0)
-df1["Similarity_Score"] = similarity_list
+        if st.button("🚀 Proses & Validasi Nomor Rekening", use_container_width=True):
+            try:
+                # 1. BACA FILE ACUAN UTAMA (REKENING VALID)
+                df_master = pd.read_excel(uploaded_files)
+                df_master.columns = [str(c).strip() for c in df_master.columns]
+                
+                if "Nama Karyawan" not in df_master.columns or "No. Rekening" not in df_master.columns:
+                    st.error("File pertama wajib memiliki kolom 'Nama Karyawan' dan 'No. Rekening'!")
+                    st.stop()
+                
+                df_master["No. Rekening"] = df_master["No. Rekening"].astype(str).str.strip()
+                list_rek_valid = df_master["No. Rekening"].tolist()
+                
+                # Buat dictionary master untuk verifikasi silang { 'rek_valid': 'nama_karyawan' }
+                dict_master_user = dict(zip(df_master["No. Rekening"], df_master["Nama Karyawan"]))
+                
+                # List penanda warna khusus untuk kolom 'No. Rekening' di file master hasil akhir
+                warna_rek_list = ["H"] * len(df_master)
 
-# Simpan hasil sementara ke Excel
-df1.to_excel(output_path, index=False)
+                # 2. PROSES FILE TAMBAHAN (FILE POTONGAN)
+                for file_tambahan in uploaded_files[1:]:
+                    df_temp = pd.read_excel(file_tambahan)
+                    df_temp.columns = [str(c).strip() for c in df_temp.columns]
+                    
+                    if "Nama Karyawan" not in df_temp.columns or "No. Rekening" not in df_temp.columns:
+                        st.error(f"File '{file_tambahan.name}' wajib memiliki kolom 'Nama Karyawan' dan 'No. Rekening'!")
+                        st.stop()
+                        
+                    df_temp["No. Rekening"] = df_temp["No. Rekening"].astype(str).str.strip()
 
-# 3. PROSES MEWARNAI CELL MENGGUNAKAN OPENPYXL
-wb = load_workbook(output_path)
-ws = wb.active
+                    # Inisialisasi wadah untuk kolom baru jika ada dari file tambahan
+                    for col in df_temp.columns:
+                        if col not in df_master.columns and col != "Nama Karyawan" and col != "No. Rekening":
+                            df_master[col] = 0.0
 
-# Tentukan warna (Hex Code)
-warna_hijau = PatternFill(
-    start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"
-)  # Hijau Lembut
-warna_kuning = PatternFill(
-    start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"
-)  # Kuning Lembut
-warna_merah = PatternFill(
-    start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"
-)  # Merah Lembut
+                    # Iterasi setiap data potongan di file tambahan untuk dicarikan rekening validnya
+                    for _, row_temp in df_temp.iterrows():
+                        rek_temp = str(row_temp["No. Rekening"]).strip()
+                        nama_temp = str(row_temp["Nama Karyawan"]).strip()
+                        
+                        # FUZZY MATCHING: Cari nomor rekening paling mirip di daftar rekening master yang valid
+                        rek_valid_terdekat, skor_rek = process.extractOne(rek_temp, list_rek_valid)
+                        
+                        # VALIDASI GANDA: Cek apakah nama di file tambahan mirip dengan nama pemilik asli rekening tersebut
+                        nama_pemilik_asli = dict_master_user.get(rek_valid_terdekat, "")
+                        skor_nama = fuzz.ratio(nama_temp.lower(), str(nama_pemilik_asli).lower())
+                        
+                        # Hitung skor total kombinasi (Bobot: 60% Rekening, 40% Kesesuaian Nama)
+                        skor_final = (skor_rek * 0.6) + (skor_nama * 0.4)
+                        
+                        # Tentukan penanda warna berdasarkan kriteria kecocokan final
+                        if skor_final > 80:
+                            flag_warna = "H"  # Hijau (Aman, diarahkan ke rekening valid)
+                        elif 30 <= skor_final <= 80:
+                            flag_warna = "K"  # Kuning (Ragu-ragu, sistem tetap memasukkan tapi tandai kuning)
+                        else:
+                            flag_warna = "M"  # Merah (Sangat tidak cocok / data tidak ditemukan)
+                            
+                        # Cari indeks baris di df_master yang memiliki rekening valid terpilih tersebut
+                        idx_master = df_master[df_master["No. Rekening"] == rek_valid_terdekat].index
+                        
+                        if not idx_master.empty:
+                            target_idx = idx_master[0]
+                            # Masukkan nilai potongan/data lain ke baris rekening valid tersebut
+                            for col in df_temp.columns:
+                                if col != "Nama Karyawan" and col != "No. Rekening":
+                                    val_baru = row_temp[col]
+                                    # Jika kolom berupa angka/keuangan, kita akumulasikan nilainya
+                                    try:
+                                        val_lama = df_master.at[target_idx, col]
+                                        df_master.at[target_idx, col] = float(val_lama if val_lama != "" else 0) + float(val_baru)
+                                    except:
+                                        df_master.at[target_idx, col] = val_baru
+                                        
+                            # Simpan status warna terburuk yang dialami rekening ini jika terjadi multi-proses
+                            if warna_rek_list[target_idx] == "H" or flag_warna == "M":
+                                warna_rek_list[target_idx] = flag_warna
 
-# Cari tahu posisi kolom "Nama Karyawan" dan "Similarity_Score"
-idx_nama = None
-idx_score = None
+                # Isi nilai kosong (NaN) dengan string kosong atau angka 0 agar rapi
+                df_master = df_master.fillna("")
 
-for col in range(1, ws.max_column + 1):
-    header = ws.cell(row=1, column=col).value
-    if header == "Nama Karyawan":
-        idx_nama = col
-    elif header == "Similarity_Score":
-        idx_score = col
+                # 3. PRATINJAU TABEL DI WEBSITE
+                st.subheader("👀 Pratinjau Hasil Validasi Rekening")
+                st.write("Warna di bawah ini diterapkan pada kolom **No. Rekening** untuk mengukur validitas data potongan yang masuk.")
 
-# Lakukan pewarnaan pada kolom Nama Karyawan berdasarkan nilai Similarity_Score
-if idx_nama and idx_score:
-    for row in range(2, ws.max_row + 1):
-        skor_cell = ws.cell(row=row, column=idx_score).value
-        nama_cell = ws.cell(row=row, column=idx_nama)
+                def style_rekening_column(df_input):
+                    df_style = pd.DataFrame("", index=df_input.index, columns=df_input.columns)
+                    for r in range(len(df_input)):
+                        flag = warna_rek_list[r]
+                        if flag == "H":
+                            df_style.loc[df_input.index[r], "No. Rekening"] = "background-color: #C6EFCE; color: #006100"
+                        elif flag == "K":
+                            df_style.loc[df_input.index[r], "No. Rekening"] = "background-color: #FFEB9C; color: #9C0006"
+                        elif flag == "M":
+                            df_style.loc[df_input.index[r], "No. Rekening"] = "background-color: #FFC7CE; color: #9C0006"
+                    return df_style
 
-        if skor_cell > 80:
-            nama_cell.fill = warna_hijau
-        elif 30 <= skor_cell <= 80:
-            nama_cell.fill = warna_kuning
-        else:  # di bawah 30%
-            nama_cell.fill = warna_merah
+                st.dataframe(df_master.style.apply(style_rekening_column, axis=None), use_container_width=True)
 
-# Hapus kolom bantuan 'Similarity_Score' agar file akhir terlihat rapi
-ws.delete_cols(idx_score)
+                # 4. PROSES PEWARNAAN CELL EXCEL ASLI (OPENPYXL)
+                buffer = io.BytesIO()
+                df_master.to_excel(buffer, index=False)
+                buffer.seek(0)
 
-# Simpan file Excel yang sudah diwarnai
-wb.save(output_path)
-print(f"Selesai! File berhasil digabungkan dan diwarnai di: {output_path}")
+                wb = load_workbook(buffer)
+                ws = wb.active
+
+                warna_hijau = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                warna_kuning = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+                warna_merah = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+                # Cari indeks kolom 'No. Rekening' di file excel hasil
+                idx_rek = next(col for col in range(1, ws.max_column + 1) if ws.cell(row=1, column=col).value == "No. Rekening")
+
+                # Warnai cell No. Rekening berdasarkan list warna_rek_list
+                for r_idx in range(2, ws.max_row + 1):
+                    flag_val = warna_rek_list[r_idx - 2]
+                    cell = ws.cell(row=r_idx, column=idx_rek)
+
+                    if flag_val == "H":
+                        cell.fill = warna_hijau
+                    elif flag_val == "K":
+                        cell.fill = warna_kuning
+                    elif flag_val == "M":
+                        cell.fill = warna_merah
+
+                output_buffer = io.BytesIO()
+                wb.save(output_buffer)
+                output_buffer.seek(0)
+
+                st.success("🎉 Berhasil merujuk rekening typo ke nomor rekening valid!")
+
+                # 5. TOMBOL DOWNLOAD
+                st.download_button(
+                    label="📥 Unduh File Hasil Validasi (.xlsx)",
+                    data=output_buffer,
+                    file_name="gabungan_rekening_valid_fuzzy.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"Terjadi kesalahan saat memproses data: {e}")
