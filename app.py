@@ -3,143 +3,140 @@ import pandas as pd
 import io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Merge Excel Custom Similarity", layout="wide")
+st.set_page_config(page_title="Merge No Rek & Similarity Nama", layout="wide")
 
-st.title("🗂️ Penggabung Excel dengan Input Persentase Kemiripan Nama")
-st.write("Tentukan batas kemiripan nama sendiri. Jika kemiripan di atas target, kolom nama akan otomatis menyatu.")
+st.title("🗂️ Penggabung Excel (Validasi Nama per No Rek)")
+st.write("Skrip ini mencocokkan **No Rek**. Jika baris No Rek yang sama memiliki **Nama** dengan kemiripan di bawah target slider, nama sheet pembanding akan dipecah ke kolom kanan baru.")
 
-# 1. Parameter Input di Sidebar / Halaman Utama
+# 1. Konfigurasi Kontrol di Sidebar / Halaman Utama
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("⚙️ Pengaturan Gabung")
-    key_column = "No Rek"
-    name_column = "Nama"
+    st.subheader("⚙️ Atur Batas Toleransi")
+    key_rek = "No Rek"
+    key_nama = "Nama"
     
-    # Input interaktif untuk menentukan persentase kemiripan nama
+    # Slider untuk menentukan batas kemiripan nama khusus untuk No Rek yang sama
     similarity_threshold = st.slider(
         "Batas Minimal Kemiripan Nama (%):", 
         min_value=0, 
         max_value=100, 
         value=90, 
         step=5,
-        help="Jika kemiripan nama di antar sheet mencapai angka ini atau lebih, kolom nama akan digabung menjadi satu."
+        help="Jika kemiripan nama untuk No Rek yang sama berada di bawah angka ini, nama akan dipisah ke kolom baru di kanan."
     )
     
     join_method = st.radio(
-        "Metode Penggabungan Nomor Rekening:",
-        options=[
-            "Tampilkan SEMUA nomor rekening (Outer Join)", 
-            "Hanya nomor rekening yang cocok di semua sheet (Inner Join)"
-        ],
+        "Metode Gabung No Rek:",
+        options=["Tampilkan semua No Rek (Outer Join)", "Hanya No Rek yang ada di semua sheet (Inner Join)"],
         index=0
     )
-    how_strategy = "outer" if "SEMUA" in join_method else "inner"
+    how_strategy = "outer" if "all" in join_method or "all" in join_method.lower() or "semua" in join_method.lower() else "inner"
 
-# Fungsi untuk menghitung persentase kemiripan teks (Fuzzy Match)
-def hitung_persen_kemiripan(teks1, teks2):
-    if pd.isna(teks1) or pd.isna(teks2):
-        return 0.0
-    return SequenceMatcher(None, str(teks1).strip().lower(), str(teks2).strip().lower()).ratio() * 100
-
-# 2. Upload File
 with col2:
-    st.subheader("📁 Unggah Dokumen")
+    st.subheader("📁 Unggah File")
     uploaded_files = st.file_uploader("Unggah File Excel Anda (.xlsx)", accept_multiple_files=True, type=["xlsx"])
 
+# Fungsi internal untuk menghitung persentase kemiripan kata/nama
+def hitung_kemiripan(str1, str2):
+    if pd.isna(str1) or pd.isna(str2):
+        return 0.0
+    return SequenceMatcher(None, str(str1).strip().lower(), str(str2).strip().lower()).ratio() * 100
+
+# 2. Proses Data
 if uploaded_files:
     all_dfs = []
     
-    # Membaca seluruh file dan sheet yang diunggah
+    # Ekstrak seluruh sheet dari file yang diupload
     for uploaded_file in uploaded_files:
         try:
             excel_file = pd.ExcelFile(uploaded_file)
             for sheet_name in excel_file.sheet_names:
                 df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                df.columns = df.columns.str.strip()
+                df.columns = df.columns.str.strip() # Bersihkan nama kolom dari spasi liar
                 
-                if key_column in df.columns:
-                    df[key_column] = df[key_column].astype(str).str.strip()
-                    if name_column in df.columns:
-                        df[name_column] = df[name_column].astype(str).str.strip()
+                if key_rek in df.columns and key_nama in df.columns:
+                    df[key_rek] = df[key_rek].astype(str).str.strip()
+                    df[key_nama] = df[key_nama].astype(str).str.strip()
                     
-                    # Simpan informasi asal nama sheet
+                    # Simpan nama sheet asal di atribut internal dataframe
                     df.attrs['sheet_name'] = sheet_name
                     all_dfs.append(df)
                 else:
-                    st.warning(f"⚠️ Kolom '{key_column}' tidak ditemukan di Sheet: **{sheet_name}** (Dilewati)")
+                    st.warning(f"⚠️ Sheet '{sheet_name}' dilewati karena tidak memiliki kolom '{key_rek}' atau '{key_nama}'.")
         except Exception as e:
-            st.error(f"Gagal membaca file {uploaded_file.name}: {e}")
+            st.error(f"Gagal membaca file: {e}")
 
-    # 3. Proses Penggabungan dengan Aturan Persentase Kustom
+    # 3. Logika Inti: Merge & Evaluasi Kemiripan per No Rek
     if all_dfs:
-        # Gunakan sheet pertama sebagai basis acuan utama
-        merged_df = all_dfs[0].copy()
+        # Gunakan sheet pertama sebagai baseline utama
+        base_df = all_dfs[0].copy()
+        base_sheet = all_dfs[0].attrs['sheet_name']
         
+        # Looping untuk setiap sheet berikutnya yang akan ditempelkan ke samping
         for next_df in all_dfs[1:]:
             sheet_name = next_df.attrs['sheet_name']
             
-            if name_column in merged_df.columns and name_column in next_df.columns:
-                # Lakukan merge temporary untuk menghitung skor kecocokan nama per baris
-                temp_merge = pd.merge(
-                    merged_df[[key_column, name_column]], 
-                    next_df[[key_column, name_column]], 
-                    on=key_column, 
-                    how=how_strategy, 
-                    suffixes=('', '_temp')
-                )
-                
-                # Hitung skor kemiripan untuk setiap baris data
-                temp_merge['skor_cocok'] = temp_merge.apply(
-                    lambda r: hitung_persen_kemiripan(r[name_column], r[f"{name_column}_temp"]), axis=1
-                )
-                
-                # Filter baris yang nilai kemiripannya di bawah instruksi user (Gagal Match)
-                gagal_match = temp_merge[temp_merge['skor_cocok'] < similarity_threshold]
-                
-                # Mapping No Rek yang namanya dianggap tidak mirip
-                rename_map = dict(zip(gagal_match[key_column], gagal_match[f"{name_column}_temp"]))
-                
-                # Pindahkan nama yang tidak mirip ke kolom baru (Nama_NamaSheet)
-                next_df[f"{name_column}_{sheet_name}"] = next_df.apply(
-                    lambda row: row[name_column] if row[key_column] in rename_map else None, axis=1
-                )
-                
-                # Kosongkan kolom Nama utama pada baris yang tidak mirip agar tidak menimpa kolom utama saat di-merge
-                next_df.loc[next_df[key_column].isin(rename_map.keys()), name_column] = None
-
-            # Beri suffix unik untuk kolom lain selain kunci utama
+            # Gabungkan sementara berdasarkan No Rek untuk membandingkan nama pada No Rek yang sama
+            temp_merged = pd.merge(
+                base_df[[key_rek, key_nama]], 
+                next_df[[key_rek, key_nama]], 
+                on=key_rek, 
+                how='inner', 
+                suffixes=('_base', '_next')
+            )
+            
+            # Hitung skor kemiripan nama baris demi baris pada No Rek yang sama
+            temp_merged['skor'] = temp_merged.apply(
+                lambda r: hitung_kemiripan(r[f'{key_nama}_base'], r[f'{key_nama}_next']), axis=1
+            )
+            
+            # Temukan daftar No Rek yang nama pasangannya di bawah standar (Gagal mirip)
+            rek_berbeda_nama = temp_merged[temp_merged['skor'] < similarity_threshold][key_rek].tolist()
+            
+            # Buat salinan dataframe untuk dimodifikasi sebelum digabungkan resmi
+            next_df_prepared = next_df.copy()
+            
+            # Buat kolom baru untuk menampung nama yang berbeda ke sebelah kanan
+            kolom_nama_baru = f"{key_nama}_{sheet_name}"
+            next_df_prepared[kolom_nama_baru] = None
+            
+            # Cari baris yang No Rek-nya bermasalah, pindahkan namanya ke kolom baru, lalu kosongkan kolom 'Nama' utamanya
+            mask_beda = next_df_prepared[key_rek].isin(rek_berbeda_nama)
+            next_df_prepared.loc[mask_beda, kolom_nama_baru] = next_df_prepared.loc[mask_beda, key_nama]
+            next_df_prepared.loc[mask_beda, key_nama] = None
+            
+            # Beri suffix unik untuk kolom data lain (misal: Saldo, Alamat, dll) agar tidak bentrok antar sheet
             rename_dict = {}
-            for col in next_df.columns:
-                if col != key_column and col != name_column and not col.endswith(f"_{sheet_name}"):
+            for col in next_df_prepared.columns:
+                if col not in [key_rek, key_nama, kolom_nama_baru]:
                     rename_dict[col] = f"{col}_{sheet_name}"
+            next_df_prepared = next_df_prepared.rename(columns=rename_dict)
             
-            next_df = next_df.rename(columns=rename_dict)
+            # Gabungkan secara resmi ke data induk utama
+            base_df = pd.merge(base_df, next_df_prepared, on=key_rek, how=how_strategy)
             
-            # Gabungkan tabel secara horizontal
-            merged_df = pd.merge(merged_df, next_df, on=key_column, how=how_strategy)
-            
-            # Bersihkan dan satukan kembali kolom Nama sisa pecahan merge otomatis Pandas jika ada
-            if f"{name_column}_x" in merged_df.columns and f"{name_column}_y" in merged_df.columns:
-                merged_df[name_column] = merged_df[f"{name_column}_x"].fillna(merged_df[f"{name_column}_y"])
-                merged_df = merged_df.drop(columns=[f"{name_column}_x", f"{name_column}_y"])
+            # Jika ada sisa pecahan kolom 'Nama' akibat join otomatis pandas (_x dan _y), rapikan kembali
+            if f"{key_nama}_x" in base_df.columns and f"{key_nama}_y" in base_df.columns:
+                base_df[key_nama] = base_df[f"{key_nama}_x"].fillna(base_df[f"{key_nama}_y"])
+                base_df = base_df.drop(columns=[f"{key_nama}_x", f"{key_nama}_y"])
 
-        # Menampilkan output hasil pemrosesan
-        st.success(f"🎉 Selesai memproses! Total data gabungan: {len(merged_df)} baris.")
+        # 4. Tampilkan Hasil Akhir di Layar Web
+        st.success(f"🎉 Selesai memproses! Total hasil gabungan: {len(base_df)} baris.")
         
         with st.expander("👁️ Tampilkan Sampel Data Gabungan"):
-            st.dataframe(merged_df.head(10))
+            st.dataframe(base_df.head(10))
             
-        # 4. Pembuatan Fitur Download Excel
+        # 5. Export ke format Excel siap pakai
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            merged_df.to_excel(writer, index=False, sheet_name='Hasil_Merge_Custom')
+            base_df.to_excel(writer, index=False, sheet_name='Hasil_Gabungan_Nama')
         
         excel_bytes = buffer.getvalue()
         
         st.download_button(
-            label="⬇️ Unduh Hasil Analisis Excel",
+            label="⬇️ Unduh File Excel Hasil Validasi",
             data=excel_bytes,
-            file_name="merge_excel_similarity_custom.xlsx",
+            file_name="merge_by_rek_and_similarity.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
