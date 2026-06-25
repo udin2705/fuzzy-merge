@@ -3,21 +3,22 @@ import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+from thefuzz import fuzz
 
-# Pengaturan halaman website
 st.set_page_config(
-    page_title="Multi-Excel Merger with Preview", page_icon="📑", layout="wide"
+    page_title="Data Name Fuzzy Merger",
+    page_icon="👥",
+    layout="wide",
 )
 
-st.title("📑 Multi-Excel Advanced Merger & Preview")
+st.title("👥 Data Name Fuzzy Merger & Painter")
 st.write(
-    "Unggah beberapa file Excel sekaligus. Sistem akan menggabungkan data, mendeteksi kolom baru, "
-    "menampilkan pratinjau hasil, dan mewarnai data berdasarkan kemiripan struktur kolom dengan file pertama."
+    "Unggah beberapa file Excel. Aplikasi akan mencocokkan data berdasarkan **No. Rekening**, "
+    "menganalisis kemiripan isi **Nama Karyawan**, tetap menggunakan nama dari file acuan pertama, dan mewarnai sel nama tersebut sesuai tingkat kemiripannya."
 )
 
-# 1. ANTARMUKA UNTUK UNGGAH BANYAK FILE
 uploaded_files = st.file_uploader(
-    "Upload Semua File Excel Anda (Bisa pilih banyak sekaligus)",
+    "Upload Semua File Excel Anda (Minimal 2 file)",
     type=["xlsx"],
     accept_multiple_files=True,
 )
@@ -27,13 +28,146 @@ if uploaded_files:
         st.warning("⚠️ Silahkan unggah minimal 2 file Excel untuk digabungkan.")
     else:
         st.info(
-            f"💡 {len(uploaded_files)} file terdeteksi. File pertama ({uploaded_files[0].name}) akan digunakan sebagai acuan utama."
+            f"💡 File acuan utama: **{uploaded_files.name}**. Seluruh nama karyawan akan mengacu pada file ini."
         )
 
-        if st.button("🚀 Mulai Gabungkan & Analisis", use_container_width=True):
+        if st.button("🚀 Mulai Gabungkan & Analisis Data", use_container_width=True):
             try:
-                # 2. BACA FILE PERTAMA SEBAGAI ACUAN UTAMA
-                file_acuan = uploaded_files[0]
+                # 1. BACA FILE ACUAN UTAMA
+                df_master = pd.read_excel(uploaded_files)
+                df_master.columns = [str(c).strip() for c in df_master.columns]
+                
+                # Validasi kolom wajib di file pertama
+                if "Nama Karyawan" not in df_master.columns or "No. Rekening" not in df_master.columns:
+                    st.error("File pertama wajib memiliki kolom 'Nama Karyawan' dan 'No. Rekening'!")
+                    st.stop()
+                
+                df_master["No. Rekening"] = df_master["No. Rekening"].astype(str).str.strip()
+                
+                # Buat DataFrame penanda warna khusus untuk kolom 'Nama Karyawan'
+                # Default 'H' (Hijau) untuk file pertama karena 100% mirip dirinya sendiri
+                warna_nama_list = ["H"] * len(df_master)
+
+                # 2. PROSES FILE TAMBAHAN SATU PER SATU
+                for file_tambahan in uploaded_files[1:]:
+                    df_temp = pd.read_excel(file_tambahan)
+                    df_temp.columns = [str(c).strip() for c in df_temp.columns]
+                    
+                    if "Nama Karyawan" not in df_temp.columns or "No. Rekening" not in df_temp.columns:
+                        st.error(f"File '{file_tambahan.name}' wajib memiliki kolom 'Nama Karyawan' and 'No. Rekening'!")
+                        st.stop()
+                        
+                    df_temp["No. Rekening"] = df_temp["No. Rekening"].astype(str).str.strip()
+
+                    # Buat dictionary file tambahan berdasarkan No. Rekening untuk pencarian cepat
+                    # Struktur: { 'no_rek': row_data_dict }
+                    dict_temp = {}
+                    for _, row in df_temp.iterrows():
+                        dict_temp[str(row["No. Rekening"])] = row.to_dict()
+
+                    # Siapkan list untuk menampung baris data baru dari file tambahan ini
+                    baris_baru_list = []
+
+                    for _, row_master in df_master.iterrows():
+                        norek = str(row_master["No. Rekening"])
+                        
+                        if norek in dict_temp:
+                            row_temp = dict_temp[norek]
+                            nama1 = str(row_master["Nama Karyawan"]).strip()
+                            nama2 = str(row_temp["Nama Karyawan"]).strip()
+                            
+                            # HITUNG FUZZY MATCH PADA DATA NAMA
+                            skor = fuzz.ratio(nama1.lower(), nama2.lower())
+                            
+                            # Tentukan flag warna berdasarkan skor kemiripan teks data
+                            if skor > 80:
+                                flag_warna = "H"
+                            elif 30 <= skor <= 80:
+                                flag_warna = "K"
+                            else:
+                                flag_warna = "M"
+                                
+                            # Gabungkan kolom baru dari file tambahan ke baris ini (jika ada kolom baru)
+                            for col in row_temp.keys():
+                                if col not in df_master.columns:
+                                    df_master[col] = ""  # Buat kolom baru di master jika belum ada
+                                    
+                            # Update nilai kolom tambahan di data master saat ini
+                            for col, val in row_temp.items():
+                                if col != "Nama Karyawan" and col != "No. Rekening":
+                                    df_master.at[_, col] = val
+                                    
+                            warna_nama_list[_] = flag_warna
+                        else:
+                            # Jika nomor rekening tidak ditemukan di file tambahan, beri warna merah pada baris tersebut
+                            if warna_nama_list[_] not in ["H", "K"]:
+                                warna_nama_list[_] = "M"
+
+                # Isi nilai kosong (NaN) dengan string kosong agar rapi
+                df_master = df_master.fillna("")
+
+                # 3. PRATINJAU TABEL DI WEBSITE
+                st.subheader("👀 Pratinjau Tabel Hasil Gabungan")
+                st.write("Warna di bawah ini diterapkan khusus pada kolom **Nama Karyawan** berdasarkan akurasi kemiripan teks datanya.")
+
+                def style_nama_column(df_input):
+                    df_style = pd.DataFrame("", index=df_input.index, columns=df_input.columns)
+                    for r in range(len(df_input)):
+                        flag = warna_nama_list[r]
+                        if flag == "H":
+                            df_style.loc[df_input.index[r], "Nama Karyawan"] = "background-color: #C6EFCE; color: #006100"
+                        elif flag == "K":
+                            df_style.loc[df_input.index[r], "Nama Karyawan"] = "background-color: #FFEB9C; color: #9C0006"
+                        elif flag == "M":
+                            df_style.loc[df_input.index[r], "Nama Karyawan"] = "background-color: #FFC7CE; color: #9C0006"
+                    return df_style
+
+                st.dataframe(df_master.style.apply(style_nama_column, axis=None), use_container_width=True)
+
+                # 4. PROSES PEWARNAAN CELL EXCEL ASLI (OPENPYXL)
+                buffer = io.BytesIO()
+                df_master.to_excel(buffer, index=False)
+                buffer.seek(0)
+
+                wb = load_workbook(buffer)
+                ws = wb.active
+
+                warna_hijau = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                warna_kuning = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+                warna_merah = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+                # Cari indeks kolom 'Nama Karyawan' di file excel hasil
+                idx_nama = next(col for col in range(1, ws.max_column + 1) if ws.cell(row=1, column=col).value == "Nama Karyawan")
+
+                # Warnai cell nama karyawan berdasarkan list warna_nama_list
+                for r_idx in range(2, ws.max_row + 1):  # Mulai baris 2 (data)
+                    flag_val = warna_nama_list[r_idx - 2]
+                    cell = ws.cell(row=r_idx, column=idx_nama)
+
+                    if flag_val == "H":
+                        cell.fill = warna_hijau
+                    elif flag_val == "K":
+                        cell.fill = warna_kuning
+                    elif flag_val == "M":
+                        cell.fill = warna_merah
+
+                output_buffer = io.BytesIO()
+                wb.save(output_buffer)
+                output_buffer.seek(0)
+
+                st.success("🎉 Analisis kemiripan isi data Nama Karyawan selesai!")
+
+                # 5. TOMBOL DOWNLOAD
+                st.download_button(
+                    label="📥 Unduh File Gabungan (.xlsx)",
+                    data=output_buffer,
+                    file_name="gabungan_data_nama_fuzzy.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"Terjadi kesalahan saat memproses data: {e}")
                 df_master = pd.read_excel(file_acuan)
 
                 # Format nama kolom file acuan agar bersih
