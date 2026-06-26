@@ -6,24 +6,27 @@ from difflib import SequenceMatcher
 st.set_page_config(page_title="Merge No Rek & Dynamic Similarity", layout="wide")
 
 st.title("🗂️ Penggabung Excel (Validasi Dinamis per No Rek)")
-st.write("Skrip ini menggabungkan data berbasis **No Rek** (Wajib 100% sama). Anda bisa mengunggah file Excel atau langsung **Copy-Paste tabel** dari layar Excel Anda.")
+st.write("Skrip ini menggabungkan data berbasis **No Rek** (Wajib 100% sama). Anda bisa mengunggah file Excel atau langsung **Copy-Paste tabel** dari layar Excel Anda. **(Aman: Bebas kombinasi huruf kapital/kecil pada judul kolom)**")
 
 # 1. Konfigurasi Kontrol di Sidebar
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("⚙️ Atur Batas Toleransi")
-    key_rek = "No Rek" 
+    key_rek = "no rek" # Standar patokan sistem diubah ke lowercase
     
-    target_col = st.text_input(
+    target_col_input = st.text_input(
         "Kolom yang Diuji Kemiripannya:", value="Nama",
-        help="Ketik persis nama kolom yang ada di Excel Anda."
+        help="Ketik nama kolom (misal: Nama, Alamat). Sistem otomatis mengabaikan huruf kapital/kecil."
     )
     
-    label_slider = f"Batas Kemiripan '{target_col}' (%):" if target_col else "Batas Kemiripan (%):"
+    # Langsung ubah input user ke lowercase agar cocok dengan dataframe di belakang layar
+    target_col = target_col_input.strip().lower()
+    
+    label_slider = f"Batas Kemiripan '{target_col_input}' (%):" if target_col_input else "Batas Kemiripan (%):"
     similarity_threshold = st.slider(
         label_slider, min_value=0, max_value=100, value=90, step=5,
-        help=f"Jika kemiripan isi kolom '{target_col}' di bawah angka ini, datanya akan dipecah ke kolom baru."
+        help=f"Jika kemiripan isi kolom '{target_col_input}' di bawah angka ini, datanya akan dipecah ke kolom baru."
     )
     
     join_method = st.radio(
@@ -33,7 +36,7 @@ with col1:
     )
     how_strategy = "outer" if "all" in join_method or "semua" in join_method.lower() else "inner"
 
-if not target_col.strip():
+if not target_col:
     st.warning("⚠️ Tentukan dahulu nama kolom yang ingin diuji pada kotak pengaturan di sebelah kiri.")
     st.stop()
 
@@ -63,7 +66,9 @@ with col2:
                     excel_file = pd.ExcelFile(uploaded_file)
                     for sheet_name in excel_file.sheet_names:
                         df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                        df.columns = df.columns.str.strip()
+                        
+                        # [PENTING] Paksa semua judul kolom jadi huruf kecil dan hapus spasi liar
+                        df.columns = df.columns.astype(str).str.strip().str.lower()
                         
                         if key_rek in df.columns and target_col in df.columns:
                             df[key_rek] = df[key_rek].astype(str).str.strip()
@@ -71,7 +76,7 @@ with col2:
                             df.attrs['sheet_name'] = sheet_name
                             all_dfs.append(df)
                         else:
-                            st.warning(f"⚠️ Sheet '{sheet_name}' dilewati: tidak ada kolom '{key_rek}' atau '{target_col}'.")
+                            st.warning(f"⚠️ Sheet '{sheet_name}' dilewati: tidak menemukan kolom '{key_rek}' atau '{target_col}'.")
                 except Exception as e:
                     st.error(f"Gagal membaca file: {e}")
 
@@ -82,20 +87,21 @@ with col2:
         
         for i, tab in enumerate(tabs):
             with tab:
-                st.caption("💡 **Cara pakai:** Buka Excel -> Block tabel beserta baris judul kolomnya -> Copy (Ctrl+C) -> Paste (Ctrl+V) di kotak bawah ini.")
+                st.caption("💡 **Cara pakai:** Buka Excel -> Block tabel beserta baris judul kolomnya -> Copy (Ctrl+C) -> Paste (Ctrl+V) di bawah ini.")
                 txt = st.text_area(f"Paste isi Tabel {i+1}:", height=130, key=f"paste_{i}", placeholder="No Rek\tNama\tAlamat\n100234\tBudi\tJakarta...")
                 
                 if txt.strip():
                     try:
-                        # Auto-detect pemisah: Coba Tab (\t) dulu, kalau gagal coba koma/titik koma
-                        df_p = pd.read_csv(io.StringIO(txt), sep='\t')
+                        # Pemindaian multi-delimiter yang jauh lebih aman
+                        df_p = pd.read_csv(io.StringIO(txt), sep=r'\t', engine='python')
                         if len(df_p.columns) == 1 and ',' in txt:
                             df_p = pd.read_csv(io.StringIO(txt), sep=',')
                         elif len(df_p.columns) == 1 and ';' in txt:
                             df_p = pd.read_csv(io.StringIO(txt), sep=';')
                             
-                        df_p.columns = df_p.columns.str.strip()
-                        df_p.dropna(how='all', inplace=True) # Hapus baris kosong di bawah
+                        # [PENTING] Standardisasi judul kolom hasil paste ke huruf kecil
+                        df_p.columns = df_p.columns.astype(str).str.strip().str.lower()
+                        df_p.dropna(how='all', inplace=True)
                         
                         if key_rek in df_p.columns and target_col in df_p.columns:
                             df_p[key_rek] = df_p[key_rek].astype(str).str.strip()
@@ -106,7 +112,7 @@ with col2:
                             
                             st.dataframe(df_p.head(4), use_container_width=True)
                         else:
-                            st.error(f"⚠️ Teks yang dipaste tidak memiliki header kolom '{key_rek}' atau '{target_col}'.")
+                            st.error(f"⚠️ Teks yang dipaste tidak memiliki header '{key_rek}' atau '{target_col}'.")
                     except Exception as err:
                         st.error(f"Gagal membaca format teks: {err}")
 
