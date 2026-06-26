@@ -3,23 +3,31 @@ import pandas as pd
 import io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Merge No Rek & Similarity Nama", layout="wide")
+st.set_page_config(page_title="Merge No Rek & Dynamic Similarity", layout="wide")
 
-st.title("🗂️ Penggabung Excel (Validasi Nama per No Rek)")
-st.write("Skrip ini mencocokkan **No Rek**. Jika baris No Rek yang sama memiliki **Nama** dengan kemiripan di bawah target slider, nama sheet pembanding akan dipecah ke kolom kanan baru. Kolom umum lainnya (Alamat, dll) akan otomatis ditimpa oleh sheet terbaru.")
+st.title("🗂️ Penggabung Excel (Validasi Dinamis per No Rek)")
+st.write("Skrip ini menggabungkan sheet berbasis **No Rek** (Wajib 100% sama). Anda bisa menentukan sendiri kolom apa yang ingin diuji kemiripannya. Jika isi kolom tersebut di bawah standar slider, datanya akan dipisah ke kolom baru di sebelah kanan.")
 
-# 1. Konfigurasi Kontrol di Sidebar / Halaman Utama
+# 1. Konfigurasi Kontrol di Sidebar
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("⚙️ Atur Batas Toleransi")
-    key_rek = "No Rek"
-    key_nama = "Nama"
+    key_rek = "No Rek" # Kunci utama patokan mati (100%)
     
+    # [BARU] Input manual kolom target yang mau dicek
+    target_col = st.text_input(
+        "Kolom yang Diuji Kemiripannya:",
+        value="Nama",
+        help="Ketik persis nama kolom yang ada di Excel Anda (misal: Nama, Alamat, atau Keterangan)."
+    )
+    
+    # Slider otomatis berubah judul mengikuti input teks di atas
+    label_slider = f"Batas Kemiripan '{target_col}' (%):" if target_col else "Batas Kemiripan (%):"
     similarity_threshold = st.slider(
-        "Batas Minimal Kemiripan Nama (%):", 
+        label_slider, 
         min_value=0, max_value=100, value=90, step=5,
-        help="Jika kemiripan nama di bawah angka ini, nama baru akan dipisah ke kolom kanan."
+        help=f"Jika kemiripan isi kolom '{target_col}' di bawah angka ini, datanya akan dipecah ke kolom baru di kanan."
     )
     
     join_method = st.radio(
@@ -32,6 +40,11 @@ with col1:
 with col2:
     st.subheader("📁 Unggah File")
     uploaded_files = st.file_uploader("Unggah File Excel Anda (.xlsx)", accept_multiple_files=True, type=["xlsx"])
+
+# Pengaman jika user tidak sengaja menghapus teks di kotak input
+if not target_col.strip():
+    st.warning("⚠️ Tentukan dahulu nama kolom yang ingin diuji pada kotak pengaturan di sebelah kiri.")
+    st.stop()
 
 def hitung_kemiripan(str1, str2):
     if pd.isna(str1) or pd.isna(str2):
@@ -49,48 +62,50 @@ if uploaded_files:
                 df = pd.read_excel(excel_file, sheet_name=sheet_name)
                 df.columns = df.columns.str.strip()
                 
-                if key_rek in df.columns and key_nama in df.columns:
+                # Cek apakah No Rek DAN Kolom Target ketikan user ada di dalam sheet
+                if key_rek in df.columns and target_col in df.columns:
                     df[key_rek] = df[key_rek].astype(str).str.strip()
-                    df[key_nama] = df[key_nama].astype(str).str.strip()
+                    df[target_col] = df[target_col].astype(str).str.strip()
                     
                     df.attrs['sheet_name'] = sheet_name
                     all_dfs.append(df)
                 else:
-                    st.warning(f"⚠️ Sheet '{sheet_name}' dilewati karena tidak memiliki kolom '{key_rek}' atau '{key_nama}'.")
+                    st.warning(f"⚠️ Sheet '{sheet_name}' dilewati karena tidak memiliki kolom '{key_rek}' atau '{target_col}'.")
         except Exception as e:
             st.error(f"Gagal membaca file: {e}")
 
-    # 3. Logika Inti: Merge & Evaluasi Kemiripan
+    # 3. Logika Inti: Merge 100% No Rek -> Evaluasi Kolom Target
     if all_dfs:
         base_df = all_dfs[0].copy()
         
         for next_df in all_dfs[1:]:
             sheet_name = next_df.attrs['sheet_name']
             
+            # Inner join sementara khusus untuk mengadu skor teks pada No Rek yang sama
             temp_merged = pd.merge(
-                base_df[[key_rek, key_nama]], next_df[[key_rek, key_nama]], 
+                base_df[[key_rek, target_col]], next_df[[key_rek, target_col]], 
                 on=key_rek, how='inner', suffixes=('_base', '_next')
             )
             
             temp_merged['skor'] = temp_merged.apply(
-                lambda r: hitung_kemiripan(r[f'{key_nama}_base'], r[f'{key_nama}_next']), axis=1
+                lambda r: hitung_kemiripan(r[f'{target_col}_base'], r[f'{target_col}_next']), axis=1
             )
             
-            rek_berbeda_nama = temp_merged[temp_merged['skor'] < similarity_threshold][key_rek].tolist()
+            rek_gagal_mirip = temp_merged[temp_merged['skor'] < similarity_threshold][key_rek].tolist()
             
             next_df_prepared = next_df.copy()
-            kolom_nama_baru = f"{key_nama}_{sheet_name}"
-            next_df_prepared[kolom_nama_baru] = None
+            kolom_pecahan_baru = f"{target_col}_{sheet_name}"
+            next_df_prepared[kolom_pecahan_baru] = None
             
-            # Pindahkan nama yang tidak lolos toleransi ke kolom pecahan, kosongkan kolom utama
-            mask_beda = next_df_prepared[key_rek].isin(rek_berbeda_nama)
-            next_df_prepared.loc[mask_beda, kolom_nama_baru] = next_df_prepared.loc[mask_beda, key_nama]
-            next_df_prepared.loc[mask_beda, key_nama] = None
+            # Jika skor di bawah threshold, lempar datanya ke kolom pecahan kanan, lalu kosongkan kolom utamanya
+            mask_beda = next_df_prepared[key_rek].isin(rek_gagal_mirip)
+            next_df_prepared.loc[mask_beda, kolom_pecahan_baru] = next_df_prepared.loc[mask_beda, target_col]
+            next_df_prepared.loc[mask_beda, target_col] = None
             
-            # GABUNGKAN
+            # GABUNGKAN SECARA RESMI (No Rek patokan 100%)
             base_df = pd.merge(base_df, next_df_prepared, on=key_rek, how=how_strategy)
             
-            # RESOLUSI OTOMATIS: Timpa semua kolom berduplikasi (_x vs _y)
+            # RESOLUSI OTOMATIS "Latest Sheet Wins" untuk seluruh kolom yang berduplikasi
             cols_x = [c for c in base_df.columns if c.endswith("_x")]
             
             for col_x in cols_x:
@@ -106,7 +121,7 @@ if uploaded_files:
         st.success(f"🎉 Selesai memproses! Total hasil gabungan: {len(base_df)} baris.")
         
         with st.expander("👁️ Tampilkan Sampel Data Gabungan"):
-            st.dataframe(base_df.head(10))
+            st.dataframe(base_df.head(15))
             
         # 5. Export
         buffer = io.BytesIO()
@@ -116,6 +131,6 @@ if uploaded_files:
         st.download_button(
             label="⬇️ Unduh File Excel Hasil Validasi",
             data=buffer.getvalue(),
-            file_name="merge_by_rek_and_similarity.xlsx",
+            file_name="merge_dynamic_similarity.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
